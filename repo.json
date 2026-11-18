@@ -3,6 +3,6 @@
   "description": "Novelas turcas en español latino",
   "manifestVersion": 1,
   "pluginLists": [
-    "https://raw.githubusercontent.com/raiderking2022-wq/turky-latam-novel/builds/plugins.json"
+    "https://raw.githubusercontent.com/raiderking2022-wq/turky-latam-novel/builds/plugins.json?v=3"
   ]
 }
