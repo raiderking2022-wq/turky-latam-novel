@@ -1,0 +1,21 @@
+[
+    {
+        "fileHash": "sha256-1660b31caea6d45c4a8030046603d75c6452b65efb73bcffd63cb22e634324b9",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/raiderking2022-wq/turky-latam-novel",
+        "fileSize": 24126,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "Turky Latam Novel"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 7,
+        "internalName": "TurkyLatamNovel",
+        "description": "Novelas turcas en espa\u00f1ol latino (solo audio latino)",
+        "url": "https://raw.githubusercontent.com/raiderking2022-wq/turky-latam-novel/builds/TurkyLatamNovel-ff2ac46.cs3",
+        "name": "TurkyLatamNovel"
+    }
+]
