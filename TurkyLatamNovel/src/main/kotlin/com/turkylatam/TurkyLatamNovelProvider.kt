@@ -102,46 +102,58 @@ class TurkyLatamNovelProvider : MainAPI() {
 
     // ---------- Ficha de la serie ----------
 
-    private val episodeRegex = Regex("""(?i)(?:cap[ií]tulo|capitulo|episodio|ep\.?)[\s\-_]*(\d+)""")
-    private val seasonRegex = Regex("""(?i)(?:temporada|season|t)[\s\-_]*(\d+)""")
+    private val episodeRegex = Regex("""(?i)cap[ií]tulo[\s\-_]*(\d+)""")
+    private val seasonRegex = Regex("""(?i)temporada[\s\-_]*(\d+)""")
 
     override suspend fun load(url: String): LoadResponse {
         var doc = app.get(url).document
+        var seriesUrl = url
 
-        // Si se abrió un capítulo, intentar ir a la ficha de la serie.
-        if (episodeRegex.containsMatchIn(url)) {
-            val seriesLink = doc.select("#body a[href], .breadcrumb a[href]").map { fixUrl(it.attr("href")) }
-                .firstOrNull { isContentLink(it) && !episodeRegex.containsMatchIn(it) && it != url }
-            if (seriesLink != null) doc = app.get(seriesLink).document
+        // Si se abrió un capítulo, ir a la ficha de la serie (2.º elemento de la miga de pan).
+        if (url.contains("-capitulo-")) {
+            doc.select("ol.breadcrumb li a[href]").map { fixUrl(it.attr("href")) }
+                .firstOrNull { isContentLink(it) && !it.contains("-capitulo-") }
+                ?.let { seriesUrl = it; doc = app.get(it).document }
         }
 
         val title = (doc.selectFirst("h1")?.text()
             ?: doc.selectFirst("meta[property=og:title]")?.attr("content")
             ?: name).substringBefore(" – ").substringBefore(" - Series Turcas").trim()
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: doc.selectFirst("#body img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+            ?: Regex("""background-image:url\(([^)]+)\)""").find(doc.html())?.groupValues?.get(1)
         val plot = doc.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")
         val tags = doc.select("a[href*=/generos/]").map { it.text() }.filter { it.isNotBlank() }.distinct()
-        val year = doc.selectFirst("a[href*=/ano/]")?.text()?.toIntOrNull()
+        val year = doc.selectFirst("a[href*=/ano/]")?.text()?.trim()?.toIntOrNull()
+
+        var links = doc.select("#episodes a.episod[href], a.episod[href]")
+        if (links.isEmpty()) links = doc.select("#body a[href*=-capitulo-]")
+        // Si la ficha no lista capítulos, usar la lista del primer capítulo enlazado.
+        if (links.size <= 1) {
+            links.firstOrNull()?.attr("href")?.let { first ->
+                val epDoc = app.get(fixUrl(first)).document
+                val more = epDoc.select("#episodes a.episod[href]")
+                if (more.size > links.size) links = more
+            }
+        }
 
         val episodes = LinkedHashMap<String, Episode>()
-        for (a in doc.select("#body a[href]")) {
+        for (a in links) {
             val href = fixUrl(a.attr("href"))
-            if (!href.startsWith(mainUrl)) continue
-            val text = a.text()
-            val epMatch = episodeRegex.find(text) ?: episodeRegex.find(href) ?: continue
             if (episodes.containsKey(href)) continue
-            val season = (seasonRegex.find(text) ?: seasonRegex.find(href))?.groupValues?.get(1)?.toIntOrNull()
+            val num = (episodeRegex.find(a.ownText()) ?: episodeRegex.find(href))?.groupValues?.get(1)?.toIntOrNull()
+            val season = (seasonRegex.find(a.text()) ?: seasonRegex.find(href))?.groupValues?.get(1)?.toIntOrNull()
+            val subtitle = a.selectFirst(".glowi")?.text()?.takeIf { it.isNotBlank() }
             episodes[href] = newEpisode(href) {
-                this.name = text.ifBlank { "Capítulo ${epMatch.groupValues[1]}" }
-                this.episode = epMatch.groupValues[1].toIntOrNull()
+                this.name = listOfNotNull(a.ownText().trim().ifBlank { null } ?: num?.let { "Capitulo $it" }, subtitle)
+                    .joinToString(" · ")
+                this.episode = num
                 this.season = season ?: 1
             }
         }
         val list = episodes.values.sortedWith(compareBy({ it.season }, { it.episode }))
             .ifEmpty { listOf(newEpisode(url) { this.name = title; this.episode = 1; this.season = 1 }) }
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, list) {
+        return newTvSeriesLoadResponse(title, seriesUrl, TvType.TvSeries, list) {
             this.posterUrl = poster
             this.plot = plot
             this.tags = tags
@@ -151,34 +163,42 @@ class TurkyLatamNovelProvider : MainAPI() {
 
     // ---------- Enlaces de vídeo ----------
 
-    private val urlInText = Regex("""https?://[^\s"'<>\\]+""")
+    // Cada servidor viene en <span data-sN="trozos|en|base64">: base64 → invertir → restar 5 → XOR con la clave.
+    private val serverKey = intArrayOf(86, 110, 51, 72, 106, 87, 56, 102)
+    private val serverRegex = Regex("""data-s(\d+)="([A-Za-z0-9+/=|]+)"""")
+    private val iframeSrc = Regex("""src="([^"]+)"""")
 
-    private fun tryBase64Url(value: String): String? {
-        if (value.length < 16 || !value.matches(Regex("^[A-Za-z0-9+/=_-]+$"))) return null
-        return runCatching { base64Decode(value) }.getOrNull()?.takeIf { it.startsWith("http") }
-    }
+    private fun decodeServer(data: String): String? = runCatching {
+        val bytes = android.util.Base64.decode(data.replace("|", ""), android.util.Base64.DEFAULT).reversedArray()
+        val sb = StringBuilder()
+        bytes.forEachIndexed { i, b -> sb.append((((b.toInt() and 0xFF) - 5 + 256) % 256 xor serverKey[i % serverKey.size]).toChar()) }
+        val html = sb.toString()
+        iframeSrc.find(html)?.groupValues?.get(1) ?: html.takeIf { it.startsWith("http") }
+    }.getOrNull()
 
-    private fun collectPlayerUrls(doc: Document): Set<String> {
-        val out = LinkedHashSet<String>()
-        val attrs = listOf("src", "data-src", "data-url", "data-video", "data-player", "data-link", "data-embed", "data-lazy-src")
-        doc.select("iframe, [data-src], [data-url], [data-video], [data-player], [data-link], [data-embed]").forEach { el ->
-            attrs.forEach { at ->
-                val v = el.attr(at).trim()
-                if (v.isBlank()) return@forEach
-                val u = if (v.startsWith("http") || v.startsWith("//")) fixUrl(v) else tryBase64Url(v)
-                if (u != null && !u.contains("googletagmanager") && !u.endsWith(".jpg") && !u.endsWith(".png") && !u.endsWith(".webp")) out.add(u)
-            }
+    private val mediaRegex = Regex("""(https?:)?//[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?""")
+
+    // Servidores que Cloudstream no conoce: buscar el .m3u8/.mp4 dentro de la página del reproductor.
+    private suspend fun genericExtract(embed: String, callback: (ExtractorLink) -> Unit): Boolean {
+        val res = runCatching { app.get(embed, referer = "$mainUrl/") }.getOrNull() ?: return false
+        var text = res.text
+        if (text.contains("eval(function(p,a,c,k,e,d)")) {
+            text += "\n" + (runCatching { getAndUnpack(text) }.getOrNull() ?: "")
         }
-        // URLs dentro de scripts del reproductor (p. ej. listas de servidores).
-        doc.select("script").forEach { s ->
-            val data = s.data()
-            if (data.contains("iframe", true) || data.contains("embed", true) || data.contains("player", true)) {
-                urlInText.findAll(data.replace("\\/", "/")).map { it.value }
-                    .filter { it.contains("embed") || it.contains("/e/") || it.contains("/v/") || it.contains(".m3u8") || it.contains("player") }
-                    .forEach { out.add(it) }
-            }
+        val host = runCatching { java.net.URI(embed).host.removePrefix("www.") }.getOrDefault(name)
+        var ok = false
+        mediaRegex.findAll(text.replace("\\/", "/")).map { it.value }.distinct().forEach { raw ->
+            val link = if (raw.startsWith("//")) "https:$raw" else raw
+            val isHls = link.contains(".m3u8")
+            callback(
+                newExtractorLink(host, host, link, if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+                    this.referer = embed
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+            ok = true
         }
-        return out
+        return ok
     }
 
     override suspend fun loadLinks(
@@ -187,17 +207,18 @@ class TurkyLatamNovelProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val doc = app.get(data).document
+        val html = app.get(data).text
+        val embeds = serverRegex.findAll(html)
+            .sortedBy { it.groupValues[1].toIntOrNull() ?: 99 }
+            .mapNotNull { decodeServer(it.groupValues[2]) }
+            .map { if (it.startsWith("//")) "https:$it" else it }
+            .distinct().toList()
+
         var found = false
-        val urls = collectPlayerUrls(doc)
-        for (u in urls) {
-            // Reproductor alojado en la propia web: abrirlo y sacar el servidor real.
-            val targets = if (u.startsWith(mainUrl)) {
-                runCatching { collectPlayerUrls(app.get(u, referer = data).document) }.getOrDefault(emptySet())
-            } else setOf(u)
-            for (t in targets) {
-                if (loadExtractor(t, data, subtitleCallback, callback)) found = true
-            }
+        for (embed in embeds) {
+            val known = runCatching { loadExtractor(embed, "$mainUrl/", subtitleCallback, callback) }.getOrDefault(false)
+            if (known) { found = true; continue }
+            if (genericExtract(embed, callback)) found = true
         }
         return found
     }
