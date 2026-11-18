@@ -1,4 +1,4 @@
-version = 3
+version = 4
 
 cloudstream {
     description = "Novelas turcas en español latino (solo audio latino)"

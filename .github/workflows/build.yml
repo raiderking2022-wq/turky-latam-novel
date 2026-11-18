@@ -35,6 +35,14 @@ jobs:
           mkdir out
           cp */build/*.cs3 out/
           cp build/plugins.json out/
+          # Nombre único por compilación para que Cloudstream no use una copia vieja.
+          SHA=${GITHUB_SHA::7}
+          for f in out/*.cs3; do
+            n=$(basename "$f" .cs3)
+            cp "$f" "out/$n-$SHA.cs3"
+            sed -i "s#/builds/$n.cs3\"#/builds/$n-$SHA.cs3\"#" out/plugins.json
+          done
+          cat out/plugins.json
           cd out
           git init -q -b builds
           git config user.name "github-actions"
