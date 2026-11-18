@@ -135,18 +135,26 @@ class TurkyLatamNovelProvider : MainAPI() {
             if (more != null && more.size > links.size) links = more
         }
 
-        val episodes = LinkedHashMap<String, Episode>()
-        for (a in links) {
+        // "Temporada N" solo marca el primer capítulo de cada temporada: se arrastra a los siguientes.
+        data class RawEp(val href: String, val num: Int?, val label: String, val badge: String?)
+        val raw = links.map { a ->
             val href = fixUrl(a.attr("href"))
-            if (episodes.containsKey(href)) continue
             val num = (episodeRegex.find(a.ownText()) ?: episodeRegex.find(href))?.groupValues?.get(1)?.toIntOrNull()
-            val season = (seasonRegex.find(a.text()) ?: seasonRegex.find(href))?.groupValues?.get(1)?.toIntOrNull()
-            val subtitle = a.selectFirst(".glowi")?.text()?.takeIf { it.isNotBlank() }
-            episodes[href] = newEpisode(href) {
-                this.name = listOfNotNull(a.ownText().trim().ifBlank { null } ?: num?.let { "Capitulo $it" }, subtitle)
+            RawEp(href, num, a.ownText().trim(), a.selectFirst(".glowi")?.text()?.trim()?.ifBlank { null })
+        }.distinctBy { it.href }.sortedBy { it.num ?: Int.MAX_VALUE }
+
+        val episodes = LinkedHashMap<String, Episode>()
+        var season = 1
+        for (e in raw) {
+            val seasonMark = e.badge?.let { seasonRegex.find(it) }?.groupValues?.get(1)?.toIntOrNull()
+            if (seasonMark != null) season = seasonMark
+            val subtitle = e.badge?.takeIf { seasonMark == null }
+            val s = season
+            episodes[e.href] = newEpisode(e.href) {
+                this.name = listOfNotNull(e.label.ifBlank { null } ?: e.num?.let { "Capitulo $it" }, subtitle)
                     .joinToString(" · ")
-                this.episode = num
-                this.season = season ?: 1
+                this.episode = e.num
+                this.season = s
             }
         }
         val list = episodes.values.sortedWith(compareBy({ it.season }, { it.episode }))
@@ -211,6 +219,7 @@ class TurkyLatamNovelProvider : MainAPI() {
             .sortedBy { it.groupValues[1].toIntOrNull() ?: 99 }
             .mapNotNull { decodeServer(it.groupValues[2]) }
             .map { if (it.startsWith("//")) "https:$it" else it }
+            .filter { it.startsWith("http") }
             .distinct().toList()
 
         var found = false
