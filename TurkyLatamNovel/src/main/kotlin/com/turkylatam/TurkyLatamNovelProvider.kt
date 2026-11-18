@@ -125,15 +125,24 @@ class TurkyLatamNovelProvider : MainAPI() {
         val tags = doc.select("a[href*=/generos/]").map { it.text() }.filter { it.isNotBlank() }.distinct()
         val year = doc.selectFirst("a[href*=/ano/]")?.text()?.trim()?.toIntOrNull()
 
-        var links = doc.select("#episodes a.episod[href], a.episod[href]")
-        if (links.isEmpty()) links = doc.select("#body a[href*=-capitulo-]")
+        // Solo capítulos de ESTA serie: /<slug>-capitulo-N/ (la web también enlaza capítulos de otras series).
+        val slug = seriesUrl.removePrefix(mainUrl).trim('/').substringBefore("-capitulo-")
+        val prefix = "$mainUrl/$slug-capitulo-"
+        fun ownEpisodes(d: Document) = d.select("a[href]").filter { fixUrl(it.attr("href")).startsWith(prefix) }
+
+        var links = ownEpisodes(doc)
         // La ficha solo muestra los últimos capítulos ("VER MAS CAPITULOS");
-        // la página de cualquier capítulo trae la lista completa.
-        val epUrl = if (url.contains("-capitulo-")) url else links.firstOrNull()?.attr("href")?.let { fixUrl(it) }
-        if (epUrl != null) {
-            val more = runCatching { app.get(epUrl).document.select("#episodes a.episod[href]") }.getOrNull()
-            if (more != null && more.size > links.size) links = more
+        // la página de cualquier capítulo trae la lista completa con las marcas de temporada.
+        val epUrl = when {
+            url.startsWith(prefix) -> url
+            links.isNotEmpty() -> fixUrl(links.first().attr("href"))
+            else -> "${prefix}1/"
         }
+        val more = runCatching {
+            app.get(epUrl).document.select("#episodes a.episod[href]")
+                .filter { fixUrl(it.attr("href")).startsWith(prefix) }
+        }.getOrNull()
+        if (more != null && more.size >= links.size) links = more
 
         // "Temporada N" solo marca el primer capítulo de cada temporada: se arrastra a los siguientes.
         data class RawEp(val href: String, val num: Int?, val label: String, val badge: String?)
