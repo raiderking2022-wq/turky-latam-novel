@@ -127,13 +127,12 @@ class TurkyLatamNovelProvider : MainAPI() {
 
         var links = doc.select("#episodes a.episod[href], a.episod[href]")
         if (links.isEmpty()) links = doc.select("#body a[href*=-capitulo-]")
-        // Si la ficha no lista capítulos, usar la lista del primer capítulo enlazado.
-        if (links.size <= 1) {
-            links.firstOrNull()?.attr("href")?.let { first ->
-                val epDoc = app.get(fixUrl(first)).document
-                val more = epDoc.select("#episodes a.episod[href]")
-                if (more.size > links.size) links = more
-            }
+        // La ficha solo muestra los últimos capítulos ("VER MAS CAPITULOS");
+        // la página de cualquier capítulo trae la lista completa.
+        val epUrl = if (url.contains("-capitulo-")) url else links.firstOrNull()?.attr("href")?.let { fixUrl(it) }
+        if (epUrl != null) {
+            val more = runCatching { app.get(epUrl).document.select("#episodes a.episod[href]") }.getOrNull()
+            if (more != null && more.size > links.size) links = more
         }
 
         val episodes = LinkedHashMap<String, Episode>()
