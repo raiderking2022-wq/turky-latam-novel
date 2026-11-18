@@ -50,3 +50,27 @@ jobs:
           git add -A
           git commit -qm "Build ${GITHUB_SHA::7}"
           git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" builds
+
+      # Publicación principal: una release por compilación. Las URLs de releases
+      # no pasan por las cachés de raw.githubusercontent, así Cloudstream ve siempre la última.
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${GITHUB_RUN_NUMBER}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases"
+          mkdir rel
+          cp build/plugins.json rel/plugins.json
+          for f in */build/*.cs3; do
+            n=$(basename "$f" .cs3)
+            cp "$f" "rel/$n.cs3"
+            sed -i "s#\"url\": \"[^\"]*/$n\.cs3\"#\"url\": \"$BASE/download/$TAG/$n.cs3\"#" rel/plugins.json
+          done
+          sed "s#\"pluginLists\": \[[^]]*\]#\"pluginLists\": [\"$BASE/download/$TAG/plugins.json\"]#" repo.json > rel/repo.json
+          python3 - <<'PY'
+          import json; json.load(open('rel/repo.json')); json.load(open('rel/plugins.json'))
+          PY
+          cat rel/repo.json rel/plugins.json
+          gh release create "$TAG" rel/* --title "Build ${GITHUB_RUN_NUMBER}" --notes "Compilación automática" --latest
+          # Dejar solo las 3 últimas releases.
+          gh release list --limit 100 --json tagName -q '.[].tagName' | grep '^build-' | tail -n +4 | xargs -r -n1 gh release delete --cleanup-tag -y
